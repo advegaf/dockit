@@ -17,7 +17,7 @@
 3. Shared mutable state. Root is the only writer to the live Dock during the feasibility test. Core files, interface files and the workbook have separate owners.
 4. Smallest safe decomposition. Keep one owner for Dock transactions and one for the interface. Root reviews handoffs and runs the system checks.
 
-Opening a PR is skipped because the repository has no remote and no request to publish one. Commits remain local. The approved architecture needs no second design competition.
+The repository lives at github.com/advegaf/dockit and releases are cut from main with Tools/Release/release.sh and publish.sh. The approved architecture needs no second design competition.
 
 ## Skill routing
 
