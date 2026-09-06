@@ -1,0 +1,48 @@
+{
+  "fill": {
+    "solid": "srgb:1.00000,1.00000,1.00000,1.00000"
+  },
+  "groups": [
+    {
+      "blend-mode": "normal",
+      "blur-material": 0,
+      "layers": [
+        {
+          "fill": "automatic",
+          "glass": false,
+          "hidden": false,
+          "image-name": "approved-dockling.png",
+          "name": "approved dockling",
+          "opacity": 1,
+          "position": {
+            "scale": 1.26,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "lighting": "individual",
+      "position": {
+        "scale": 1,
+        "translation-in-points": [
+          0,
+          0
+        ]
+      },
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

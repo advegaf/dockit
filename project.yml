@@ -1,0 +1,113 @@
+name: Dockit
+options:
+  minimumXcodeGenVersion: 2.44.0
+  deploymentTarget:
+    macOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_APP_SANDBOX: NO
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: DV483F72N3
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "7"
+  configs:
+    Debug:
+      CODE_SIGN_IDENTITY: Apple Development
+    Release:
+      CODE_SIGN_IDENTITY: Apple Development
+targets:
+  DockitCore:
+    type: framework
+    platform: macOS
+    sources:
+      - path: Sources/DockitCore
+        excludes: ["**/Icon*"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.advegaf.dockit.core
+        GENERATE_INFOPLIST_FILE: YES
+  Dockit:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Dockit
+        excludes: ["**/Icon*"]
+      - path: Design/AppIcon.icon
+        type: file
+    dependencies:
+      - target: DockitCore
+      - target: DockitFocusExtension
+        embed: true
+    settings:
+      base:
+        PRODUCT_NAME: dockit
+        PRODUCT_BUNDLE_IDENTIFIER: com.advegaf.dockit
+        INFOPLIST_FILE: Configuration/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Configuration/Dockit.entitlements
+        REGISTER_APP_GROUPS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  DockitFocusExtension:
+    type: extensionkit-extension
+    platform: macOS
+    sources:
+      - path: Sources/DockitFocusExtension
+        excludes: ["**/Icon*"]
+    dependencies:
+      - target: DockitCore
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.advegaf.dockit.focus
+        PRODUCT_NAME: DockitFocusExtension
+        INFOPLIST_FILE: Configuration/FocusExtension-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Configuration/DockitFocusExtension.entitlements
+        REGISTER_APP_GROUPS: YES
+        SKIP_INSTALL: YES
+        ENABLE_APP_SANDBOX: YES
+  DockitAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/DockitAppTests
+        excludes: ["**/Icon*"]
+    dependencies:
+      - target: Dockit
+      - target: DockitCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.advegaf.dockit.app-tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/dockit.app/Contents/MacOS/dockit"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  Dockit:
+    build:
+      targets:
+        Dockit: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  DockitAppTests:
+    build:
+      targets:
+        Dockit: all
+        DockitAppTests: [test]
+    run:
+      config: Debug
+      executable: Dockit
+      environmentVariables:
+        DOCKIT_DEMO: "1"
+        DOCKIT_TEST_HOST: "1"
+    test:
+      config: Debug
+      targets:
+        - name: DockitAppTests
+          parallelizable: false
+          randomExecutionOrder: false
+      environmentVariables:
+        DOCKIT_DEMO: "1"
+        DOCKIT_TEST_HOST: "1"
