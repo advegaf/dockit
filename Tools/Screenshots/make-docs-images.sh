@@ -23,8 +23,10 @@ shot hero     dark  HOLD=editor   DOCKIT_DEMO_APPEARANCE=dark
 shot editor   light HOLD=editor   DOCKIT_DEMO_APPEARANCE=light
 shot settings light HOLD=settings DOCKIT_DEMO_APPEARANCE=light
 shot guide    dark  HOLD=guide    DOCKIT_DEMO_APPEARANCE=dark
-# No menu shot: screencapture cannot image a pop-up menu window (it answers
+# No menu shot here: screencapture cannot image a pop-up menu window (it answers
 # "could not create image from window" for the menu's window number every time).
+# docs/images/menu.png is a hand-taken screenshot of the open menu, cropped to
+# the card with rounded corners and a shadow, then framed with FrameShot.swift.
 
 # The README hero icon, straight from the app icon's largest slot.
 cp Sources/Dockit/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png docs/images/logo.png

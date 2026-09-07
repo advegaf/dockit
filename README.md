@@ -27,6 +27,12 @@ dockit edits the real macOS Dock. It is not a replacement Dock and it draws noth
 
 The quick guide opens once, after the first profile is saved, and again from Help, quick guide. It covers the four things there are to do: pick a profile, arrange it, apply it, and switch from the menu bar.
 
+<p align="center">
+  <img src="docs/images/menu.png" width="360" alt="The dockit menu bar menu listing every profile with the active one checked">
+</p>
+
+The menu bar menu is a plain native menu: every profile, the active one checked, then manage docks, settings, and quit.
+
 The editor is one window: a profile picker in the title bar, the profile's name and status, the apply button, and a preview of the Dock it will produce. Selecting a profile only inspects it. Nothing touches the Dock until you apply. The menu bar menu is a plain native menu that lists every profile and marks the active one. A Focus filter (System Settings, Focus, add a filter, dockit) applies a profile when that Focus turns on and leaves the Dock alone when it turns off.
 
 ## Build
