@@ -344,6 +344,24 @@ struct EditorWindowLayoutTests {
     }
 
     @Test
+    func setupSizeGrowsTheWindowDownwardAndTheEditorSizeTakesItBack() {
+        let window = makeWindow()
+        defer { window.close() }
+        let view = EditorWindowLayout.WindowLayoutView()
+        window.contentView = view
+        let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
+
+        view.size = DockitWindowSize.setup
+        #expect(window.frame.size == DockitWindowSize.setup)
+        #expect(NSPoint(x: window.frame.minX, y: window.frame.maxY) == topLeft)
+        #expect(window.minSize == DockitWindowSize.setup && window.maxSize == DockitWindowSize.setup)
+
+        view.size = DockitWindowSize.editor
+        #expect(window.frame.size == DockitWindowSize.editor)
+        #expect(NSPoint(x: window.frame.minX, y: window.frame.maxY) == topLeft)
+    }
+
+    @Test
     func reattachingLayoutDoesNotMoveOrGrowTheEditor() {
         let window = makeWindow()
         defer { window.close() }

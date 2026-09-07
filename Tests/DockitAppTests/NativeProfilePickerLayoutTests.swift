@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct NativeProfilePickerLayoutTests {
     @Test
-    func hostedEditorPickerSharesTrafficLightCenter() async throws {
+    func hostedEditorPickerSitsJustBelowTheTrafficLightCenter() async throws {
         await Task.yield()
         func pickers(in view: NSView) -> [NativeProfilePopUpButton] {
             (view as? NativeProfilePopUpButton).map { [$0] }
@@ -18,12 +18,14 @@ struct NativeProfilePickerLayoutTests {
         let picker = try #require(hostedPickers.first)
         let window = try #require(picker.window)
         let pickerCenter = picker.convert(picker.bounds, to: nil).midY
+        #expect(picker.bounds.height == NativeProfilePopUpButton.controlHeight)
+        let expectedDrop = NativeProfilePopUpButton.toolbarTopOffset / 2
         for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             let light = try #require(window.standardWindowButton(kind))
             let trafficLightCenter = light.convert(light.bounds, to: nil).midY
-            print("picker-alignment button=\(kind.rawValue) picker=\(pickerCenter) light=\(trafficLightCenter) delta=\(abs(pickerCenter - trafficLightCenter))")
-            #expect(abs(pickerCenter - trafficLightCenter) <= 1,
-                "picker center \(pickerCenter), traffic light \(kind.rawValue) center \(trafficLightCenter)")
+            print("picker-alignment button=\(kind.rawValue) picker=\(pickerCenter) light=\(trafficLightCenter) drop=\(trafficLightCenter - pickerCenter)")
+            #expect(abs((trafficLightCenter - pickerCenter) - expectedDrop) <= 1.5,
+                "picker center \(pickerCenter) should sit \(expectedDrop) pt below traffic light \(kind.rawValue) center \(trafficLightCenter)")
         }
     }
 
@@ -68,7 +70,7 @@ struct NativeProfilePickerLayoutTests {
         #expect(titleRect.width >= ceil(titleSize.width))
         #expect(titleRect.height >= ceil(titleSize.height))
         #expect(button.bounds.contains(titleRect))
-        #expect(button.frame.height == 30)
+        #expect(button.frame.height == NativeProfilePopUpButton.controlHeight)
     }
 
     @Test(arguments: ["current dock", "Current dock", "personal", "work"])
@@ -82,7 +84,7 @@ struct NativeProfilePickerLayoutTests {
         #expect(titleRect.width >= ceil(cell.attributedTitle.size().width))
         #expect(button.frame.width >= NativeProfilePopUpButton.minimumWidth)
         #expect(button.frame.width <= NativeProfilePopUpButton.maximumWidth)
-        #expect(button.frame.height == 30)
+        #expect(button.frame.height == NativeProfilePopUpButton.controlHeight)
         #expect(button.intrinsicContentSize == button.measuredSize())
     }
 
@@ -100,7 +102,7 @@ struct NativeProfilePickerLayoutTests {
         )
 
         #expect(button.frame.width == NativeProfilePopUpButton.maximumWidth)
-        #expect(button.frame.height > 30)
+        #expect(button.frame.height >= NativeProfilePopUpButton.controlHeight)
         #expect(titleRect.width < cell.attributedTitle.size().width)
         #expect(titleRect.height >= ceil(textBounds.height))
         #expect(button.bounds.contains(titleRect))

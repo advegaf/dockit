@@ -56,7 +56,8 @@ struct ProfileDetailView: View {
             ToolbarItem(placement: .primaryAction) {
                 NativeProfileToolbarPicker(model: model)
                     .padding(.horizontal, NativeProfilePopUpButton.backingHorizontalInset)
-                    .background(DockEditorControlSurface())
+                    .background(DockEditorControlSurface(cornerRadius: 12))
+                    .padding(.top, NativeProfilePopUpButton.toolbarTopOffset)
             }
             .sharedBackgroundVisibility(.hidden)
             ToolbarSpacer(.fixed, placement: .primaryAction)
@@ -293,9 +294,10 @@ final class ApplyProgressPresentation {
 private struct DockEditorControlSurface: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    var cornerRadius: CGFloat = 8
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(
                 Color(nsColor: colorScheme == .dark ? .controlBackgroundColor : .controlColor)
                     .opacity(reduceTransparency ? 1 : 0.75)

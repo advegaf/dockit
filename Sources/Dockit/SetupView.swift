@@ -8,40 +8,38 @@ struct SetupView: View {
     @State private var creatingLabel = "creating dock"
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                Image(nsImage: NSApplication.shared.applicationIconImage)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 80, height: 80)
-                    .accessibilityHidden(true)
-                VStack(spacing: 8) {
-                    Text("a different dock for whatever you are doing.")
-                        .font(.title.weight(.semibold))
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("dockit saves pinned apps and spacers. folders, recent and open apps, windows, and other dock settings stay unchanged.")
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 480)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Toggle("launch dockit at login", isOn: $launchAtLogin)
-                    .toggleStyle(.checkbox)
-                    .help("keeps focus automation ready after you sign in")
-
-                saveCurrentDockButton
-
-                if isCreating {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel(creatingLabel)
-                }
+        VStack(spacing: 24) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 80, height: 80)
+                .accessibilityHidden(true)
+            VStack(spacing: 8) {
+                Text("a different dock for whatever you are doing.")
+                    .font(.title.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("dockit saves pinned apps and spacers. folders, recent and open apps, windows, and other dock settings stay unchanged.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 480)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(48)
-            .frame(maxWidth: .infinity)
+
+            Toggle("launch dockit at login", isOn: $launchAtLogin)
+                .toggleStyle(.checkbox)
+                .help("keeps focus automation ready after you sign in")
+
+            saveCurrentDockButton
+
+            if isCreating {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(creatingLabel)
+            }
         }
+        .padding(.horizontal, 48)
+        .padding(.vertical, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 

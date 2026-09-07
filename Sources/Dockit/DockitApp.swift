@@ -3,6 +3,10 @@ import SwiftUI
 
 enum DockitWindowSize {
     static let editor = NSSize(width: 620, height: 252)
+    /// The first-run screen: icon, headline, blurb, login toggle, save button.
+    /// Taller than the editor so nothing scrolls; the window animates back to
+    /// the editor size once the first profile exists.
+    static let setup = NSSize(width: 620, height: 440)
     static let settings = NSSize(width: 620, height: 620)
     static let settingsMinimum = NSSize(width: 520, height: 480)
 }
@@ -40,7 +44,9 @@ private struct DockitRootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .windowResizeBehavior(.disabled)
             .windowFullScreenBehavior(.disabled)
-            .background(EditorWindowLayout())
+            .background(EditorWindowLayout(size: model.library.profiles.isEmpty && !model.isLoading && !model.storageUnavailable
+                ? DockitWindowSize.setup
+                : DockitWindowSize.editor))
             .onAppear {
                 appDelegate.setWindowPresenter {
                     openWindow(id: "management")
@@ -53,13 +59,25 @@ private struct DockitRootView: View {
 }
 
 struct EditorWindowLayout: NSViewRepresentable {
+    var size: NSSize = DockitWindowSize.editor
+
     func makeNSView(context: Context) -> WindowLayoutView {
-        WindowLayoutView()
+        let view = WindowLayoutView()
+        view.size = size
+        return view
     }
 
-    func updateNSView(_ view: WindowLayoutView, context: Context) {}
+    func updateNSView(_ view: WindowLayoutView, context: Context) {
+        view.size = size
+    }
 
     final class WindowLayoutView: NSView {
+        /// The one size this window may have right now. Changing it resizes
+        /// the window in place, keeping its top left corner where it is.
+        var size: NSSize = DockitWindowSize.editor {
+            didSet { if size != oldValue { apply(animated: true) } }
+        }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
@@ -68,15 +86,21 @@ struct EditorWindowLayout: NSViewRepresentable {
             window.collectionBehavior.insert(.fullScreenNone)
             window.titlebarSeparatorStyle = .none
             window.titlebarAppearsTransparent = true
-            window.minSize = DockitWindowSize.editor
-            window.maxSize = DockitWindowSize.editor
+            apply(animated: false)
+        }
+
+        private func apply(animated: Bool) {
+            guard let window else { return }
+            window.minSize = size
+            window.maxSize = size
             let frame = NSRect(
                 x: window.frame.minX,
-                y: window.frame.maxY - DockitWindowSize.editor.height,
-                width: DockitWindowSize.editor.width,
-                height: DockitWindowSize.editor.height
+                y: window.frame.maxY - size.height,
+                width: size.width,
+                height: size.height
             )
-            window.setFrame(frame, display: false)
+            guard window.frame != frame else { return }
+            window.setFrame(frame, display: true, animate: animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         }
     }
 }

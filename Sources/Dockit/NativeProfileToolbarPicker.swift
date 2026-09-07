@@ -237,6 +237,12 @@ final class NativeProfilePopUpButton: NSPopUpButton {
     static let minimumWidth: CGFloat = 104
     static let maximumWidth: CGFloat = 340
     static let backingHorizontalInset: CGFloat = 10
+    /// A 36 pt pill, thicker than a stock toolbar control, matching the
+    /// design reference for the editor.
+    static let controlHeight: CGFloat = 36
+    /// Extra top padding on the toolbar item. The pill's center sits 4 pt
+    /// below the traffic lights' center, as in the reference.
+    static let toolbarTopOffset: CGFloat = 8
 
     override init(frame buttonFrame: NSRect, pullsDown flag: Bool) {
         super.init(frame: buttonFrame, pullsDown: false)
@@ -280,7 +286,7 @@ final class NativeProfilePopUpButton: NSPopUpButton {
             x: 0,
             y: 0,
             width: max(Self.minimumWidth, natural.width),
-            height: max(30, natural.height)
+            height: max(Self.controlHeight, natural.height)
         )
         let nativeTitleRect = popupCell.titleRect(forBounds: naturalBounds)
         let horizontalInsets = naturalBounds.width - nativeTitleRect.width
@@ -291,7 +297,7 @@ final class NativeProfilePopUpButton: NSPopUpButton {
         )
         let bounds = NSRect(x: 0, y: 0, width: width, height: naturalBounds.height)
         let wrapped = popupCell.cellSize(forBounds: bounds)
-        return NSSize(width: width, height: ceil(max(30, wrapped.height)))
+        return NSSize(width: width, height: ceil(max(Self.controlHeight, wrapped.height)))
     }
 
     private func configure() {

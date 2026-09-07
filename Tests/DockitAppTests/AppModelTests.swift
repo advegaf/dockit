@@ -546,7 +546,7 @@ struct AppModelTests {
         #expect(shortSize.width >= NativeProfilePopUpButton.minimumWidth)
         #expect(titleWidth > NativeProfilePopUpButton.maximumWidth)
         #expect(wideSize.width <= NativeProfilePopUpButton.maximumWidth)
-        #expect(wideSize.height > shortSize.height)
+        #expect(wideSize.height >= shortSize.height)
     }
 
     @Test
