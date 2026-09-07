@@ -49,7 +49,14 @@ final class DockRestartCover {
 
     private var decoded: [NSNumber: Decoded] = [:]
     private var windows: [NSWindow] = []
-    private var decodedFor: (screens: [NSNumber], store: Date?, reported: [String])?
+    private struct SourceKey: Equatable {
+        var screens: [NSNumber]
+        var store: Date?
+        var reported: [String]
+    }
+
+    private var decodedFor: SourceKey?
+    private var pendingKey: SourceKey?
     private var generation = 0
     private var watcher: Timer?
     private static let log = Logger(subsystem: "com.advegaf.dockit", category: "cover")
@@ -60,10 +67,21 @@ final class DockRestartCover {
     func preload() {
         let screens = NSScreen.screens
         let numbers = screens.compactMap { $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber }
-        let storeDate = WallpaperStore.indexModificationDate()
-        let reported = screens.map { NSWorkspace.shared.desktopImageURL(for: $0)?.path ?? "" }
-        if let decodedFor, decodedFor.screens == numbers, decodedFor.store == storeDate, decodedFor.reported == reported { return }
-        decodedFor = (numbers, storeDate, reported)
+        let key = SourceKey(
+            screens: numbers,
+            store: WallpaperStore.indexModificationDate(),
+            reported: screens.map { NSWorkspace.shared.desktopImageURL(for: $0)?.path ?? "" }
+        )
+        if key == decodedFor { pendingKey = nil; return }
+        // While the Dock restarts, macOS reports the default wallpaper for a
+        // fraction of a second. A change has to hold for two consecutive
+        // reads before it is decoded; the first decode is immediate.
+        if decodedFor != nil, key != pendingKey {
+            pendingKey = key
+            return
+        }
+        pendingKey = nil
+        decodedFor = key
         generation += 1
         let thisGeneration = generation
         if watcher == nil {
@@ -181,39 +199,53 @@ final class DockRestartCover {
     /// The windows exist before they are needed. Creating one at switch time
     /// costs tens of milliseconds, and with SIGKILL the Dock is gone in under
     /// ten, so a window built on demand reached the screen after the flash.
+    /// A window that already exists for a screen keeps its place and only
+    /// gets new contents; ordering windows in and out is itself visible.
     private func rebuildWindows() {
-        let previous = windows
-        windows.removeAll()
+        var kept: [NSWindow] = []
         for screen in NSScreen.screens {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
                   let wallpaper = decoded[number] else { continue }
-            let window = NSWindow(
-                contentRect: screen.frame,
-                styleMask: .borderless,
-                backing: .buffered,
-                defer: false
-            )
-            window.level = NSWindow.Level(rawValue: Self.level)
-            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
-            window.ignoresMouseEvents = true
-            window.hasShadow = false
-            window.isOpaque = true
-            window.isReleasedWhenClosed = false
+            let window = windows.first { $0.identifier?.rawValue == "cover-\(number)" } ?? Self.makeWindow(for: screen, number: number)
+            window.setFrame(screen.frame, display: false)
             window.backgroundColor = wallpaper.fillColor
-            let view = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
-            view.wantsLayer = true
-            view.layer?.contents = wallpaper.image
-            view.layer?.contentsGravity = wallpaper.gravity
-            view.layer?.backgroundColor = wallpaper.fillColor.cgColor
-            window.contentView = view
-            windows.append(window)
+            let layer = window.contentView?.layer
+            layer?.contents = wallpaper.image
+            layer?.contentsGravity = wallpaper.gravity
+            layer?.backgroundColor = wallpaper.fillColor.cgColor
+            kept.append(window)
         }
-        // New windows go up before the old ones come down, so a persistent
-        // cover never shows what is underneath while it is replaced.
+        let dropped = windows.filter { window in !kept.contains { $0 === window } }
+        windows = kept
         if isPersistent { show() }
-        for window in previous {
+        for window in dropped {
             window.orderOut(nil)
         }
+    }
+
+    private static func makeWindow(for screen: NSScreen, number: NSNumber) -> NSWindow {
+        let window = NSWindow(
+            contentRect: screen.frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.identifier = NSUserInterfaceItemIdentifier("cover-\(number)")
+        window.level = NSWindow.Level(rawValue: level)
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
+        window.ignoresMouseEvents = true
+        window.hasShadow = false
+        window.isOpaque = true
+        window.isReleasedWhenClosed = false
+        // In the screen's color space the composited cover matches the
+        // Dock's wallpaper exactly. Left at the default, the menu bar's
+        // glass read the cover about one percent brighter, and every
+        // restart showed that as a two-frame blip.
+        window.colorSpace = screen.colorSpace
+        let view = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        view.wantsLayer = true
+        window.contentView = view
+        return window
     }
 
     func show() {
