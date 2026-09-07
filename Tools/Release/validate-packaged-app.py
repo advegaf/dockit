@@ -3,7 +3,17 @@
 
 import pathlib
 import plistlib
+import re
 import sys
+
+
+def marketing_version():
+    """The version project.yml declares, so a bump there is the only bump."""
+    project = pathlib.Path(__file__).resolve().parents[2] / "project.yml"
+    match = re.search(r'MARKETING_VERSION:\s*"([^"]+)"', project.read_text())
+    if not match:
+        raise ValueError("MARKETING_VERSION missing from project.yml")
+    return match.group(1)
 
 
 def validate(app, mode):
@@ -13,13 +23,14 @@ def validate(app, mode):
         info = plistlib.load(source)
     if mode == "preview":
         return
-    if info.get("CFBundleShortVersionString") != "1.0.0":
-        raise ValueError("usable installer requires app version 1.0.0")
+    expected = marketing_version()
+    if info.get("CFBundleShortVersionString") != expected:
+        raise ValueError(f"usable installer requires app version {expected}")
     extension_info = pathlib.Path(app) / "Contents" / "Extensions" / "DockitFocusExtension.appex" / "Contents" / "Info.plist"
     with extension_info.open("rb") as source:
         extension = plistlib.load(source)
-    if extension.get("CFBundleShortVersionString") != "1.0.0":
-        raise ValueError("usable installer requires Focus extension version 1.0.0")
+    if extension.get("CFBundleShortVersionString") != expected:
+        raise ValueError(f"usable installer requires Focus extension version {expected}")
     identifier = info.get("CFBundleIdentifier", "")
     if identifier != "com.advegaf.dockit":
         raise ValueError(f"usable installer requires com.advegaf.dockit, got {identifier!r}")

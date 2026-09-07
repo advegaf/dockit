@@ -25,7 +25,7 @@ For a usable local build that is not yet notarized:
 bash Tools/Release/package-dmg.sh /absolute/development/dockit.app /absolute/output/dockit-development.dmg development
 ```
 
-Development and release modes require `com.advegaf.dockit` and version `1.0.0` for both the app and Focus extension. They reject preview product names and every `DOCKIT_` entry in `LSEnvironment`. This prevents test-host and demo builds from being delivered as working apps. Development mode preserves the app signature, labels its filename and volume, and does not claim notarization. Release verification applies the same guard before ZIP or DMG creation. Artwork contains no development or notarization notices.
+Development and release modes require `com.advegaf.dockit` and the `MARKETING_VERSION` from `project.yml` for both the app and Focus extension. They reject preview product names and every `DOCKIT_` entry in `LSEnvironment`. This prevents test-host and demo builds from being delivered as working apps. Development mode preserves the app signature, labels its filename and volume, and does not claim notarization. Release verification applies the same guard before ZIP or DMG creation. Artwork contains no development or notarization notices.
 
 Regenerate the standard and Retina backgrounds from the reviewed full-canvas artwork:
 

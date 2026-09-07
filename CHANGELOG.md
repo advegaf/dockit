@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.1
 
 - The first-run screen no longer scrolls. The window opens at 620 by 440 for it and animates back to the editor's 620 by 252 once the first profile exists (no animation with Reduce Motion on).
 - The profile picker in the title bar is a 36 pt pill with 12 pt corners, sitting a touch below the traffic lights, matching the editor's design reference.
