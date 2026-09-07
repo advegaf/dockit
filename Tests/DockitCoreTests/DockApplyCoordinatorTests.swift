@@ -392,12 +392,16 @@ private actor ProcessAwareReloader: DockReloading {
 /// Preferences and reloader in one: after a reload the simulated Dock holds
 /// what it loaded and, three reads later, writes it back in its own encoding,
 /// the way the real Dock does about four seconds after launch.
+/// A Dock as the product now treats it: a SIGKILLed Dock never flushes, the
+/// relaunched Dock loads what is on disk, and a few reads later it rewrites
+/// that in its own encoding (same layout, different bytes).
 private actor SimulatedDock: DockPreferencesServing, DockReloading {
     private var preferences: DockSnapshot
     private var dockHolds: DockSnapshot
     private var flushed = true
     private var readsSinceReload = 0
     private(set) var reloads = 0
+    private(set) var reads = 0
 
     init(snapshot: DockSnapshot) {
         preferences = snapshot
@@ -407,8 +411,9 @@ private actor SimulatedDock: DockPreferencesServing, DockReloading {
     func assertMutable() {}
 
     func readPersistentApps() throws -> DockSnapshot {
+        reads += 1
         readsSinceReload += 1
-        if !flushed, readsSinceReload >= 3 {
+        if !flushed, readsSinceReload >= 3, preferences.isEquivalent(to: dockHolds) {
             flushed = true
             preferences = try Self.reencoded(dockHolds)
         }
@@ -437,27 +442,95 @@ private actor SimulatedDock: DockPreferencesServing, DockReloading {
     }
 }
 
-@Test func aSecondApplyWaitsForTheRelaunchedDockToWriteItsPreferences() async throws {
+private let notesProfile = DockProfile(name: "Notes", color: .blue, items: [
+    DockItem(kind: .application(DockApp(
+        bundleIdentifier: "com.apple.Notes",
+        path: "/System/Applications/Notes.app",
+        displayName: "Notes"
+    ))),
+])
+
+private let textEditProfile = DockProfile(name: "TextEdit", color: .green, items: [
+    DockItem(kind: .application(DockApp(
+        bundleIdentifier: "com.apple.TextEdit",
+        path: "/System/Applications/TextEdit.app",
+        displayName: "TextEdit"
+    ))),
+])
+
+@Test func aSecondApplyRightAfterTheFirstWritesAndReloadsWithoutWaiting() async throws {
     let dock = SimulatedDock(snapshot: try DockSnapshot(rawTiles: []))
     let coordinator = DockApplyCoordinator(preferences: dock, reloader: dock)
-    let notes = DockProfile(name: "Notes", color: .blue, items: [
-        DockItem(kind: .application(DockApp(
-            bundleIdentifier: "com.apple.Notes",
-            path: "/System/Applications/Notes.app",
-            displayName: "Notes"
-        ))),
-    ])
-    let textEdit = DockProfile(name: "TextEdit", color: .green, items: [
-        DockItem(kind: .application(DockApp(
-            bundleIdentifier: "com.apple.TextEdit",
-            path: "/System/Applications/TextEdit.app",
-            displayName: "TextEdit"
-        ))),
-    ])
 
-    _ = try await coordinator.apply(profile: notes, localState: DockProfileLocalState())
-    let second = try await coordinator.apply(profile: textEdit, localState: DockProfileLocalState())
+    _ = try await coordinator.apply(profile: notesProfile, localState: DockProfileLocalState())
+    let readsAfterFirst = await dock.reads
+    let second = try await coordinator.apply(profile: textEditProfile, localState: DockProfileLocalState())
 
     #expect(await dock.reloads == 2)
     #expect(second.appliedSnapshot.hasSameLayout(as: second.previousSnapshot) == false)
+    // prepare, pre-write check, exact verify, layout verify: no polling loop.
+    #expect(await dock.reads - readsAfterFirst == 4)
+}
+
+/// After a completed reload the Dock shows what is on disk. When a verify
+/// fails and disk already holds the previous layout, rolling back must not
+/// restart the Dock a second time.
+private actor RevertingReloader: DockReloading {
+    let preferences: MemoryPreferences
+    let previous: DockSnapshot
+    private(set) var attempts = 0
+
+    init(preferences: MemoryPreferences, previous: DockSnapshot) {
+        self.preferences = preferences
+        self.previous = previous
+    }
+
+    func reload() async -> DockReloadResult {
+        attempts += 1
+        await preferences.writePersistentApps(previous)
+        return DockReloadResult(previousProcessIdentifier: 1, currentProcessIdentifier: 2)
+    }
+}
+
+@Test func rollbackSkipsTheSecondRestartWhenTheDockAlreadyShowsThePreviousLayout() async throws {
+    let original = try DockSnapshot(rawTiles: [["GUID": 7, "tile-type": "spacer-tile", "tile-data": [String: Any]()]])
+    let preferences = MemoryPreferences(snapshot: original)
+    let reloader = RevertingReloader(preferences: preferences, previous: original)
+    let coordinator = DockApplyCoordinator(preferences: preferences, reloader: reloader)
+
+    do {
+        _ = try await coordinator.apply(profile: notesProfile, localState: DockProfileLocalState())
+        Issue.record("A reload that reverted the layout did not fail the apply")
+    } catch let error as DockApplyError {
+        guard case .rolledBack = error else {
+            Issue.record("Unexpected error: \(error)")
+            return
+        }
+    }
+
+    #expect(await reloader.attempts == 1)
+    #expect(await preferences.snapshot.isEquivalent(to: original))
+}
+
+@Test func aDockReencodeBetweenPrepareAndApplyIsNotAUserChange() async throws {
+    let original = try DockSnapshot(rawTiles: [["GUID": 7, "tile-type": "spacer-tile", "tile-data": [String: Any]()]])
+    let reencoded = try DockSnapshot(rawTiles: [["GUID": 100_007, "tile-type": "spacer-tile", "tile-data": [String: Any]()]])
+    let preferences = MemoryPreferences(snapshot: original)
+    let reloader = FailingOnceReloader()
+    let coordinator = DockApplyCoordinator(preferences: preferences, reloader: reloader)
+    let plan = try await coordinator.prepare(profile: notesProfile, localState: DockProfileLocalState())
+
+    await preferences.writePersistentApps(reencoded)
+
+    do {
+        _ = try await coordinator.apply(plan)
+        Issue.record("The injected reload failure did not fail the apply")
+    } catch let error as DockApplyError {
+        guard case .rolledBack = error else {
+            Issue.record("Unexpected error: \(error)")
+            return
+        }
+    }
+    // Rolled back to the Dock's newer bytes, not the stale prepare-time ones.
+    #expect(await preferences.snapshot.isEquivalent(to: reencoded))
 }

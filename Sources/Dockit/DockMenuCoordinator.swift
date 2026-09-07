@@ -232,6 +232,11 @@ final class DockMenuCoordinator: NSObject, NSMenuDelegate {
     private func updateStatusItem() {
         if statusItem == nil {
             statusItem = makeStatusItem()
+            // A named item keeps the position the user drags it to. Without a
+            // name macOS files it under "Item-0", and a stale value there put
+            // the icon at the far left, where it was the first item hidden
+            // whenever the front app's menus were wide.
+            statusItem?.autosaveName = "dockit"
         }
         let assetName = NSStatusBar.system.thickness <= 22 ? "MenuBarIcon16" : "MenuBarIcon"
         let image = NSImage(named: assetName)?.copy() as? NSImage
@@ -367,9 +372,10 @@ final class DockitAppDelegate: NSObject, NSApplicationDelegate {
         }
         if let seconds = ProcessInfo.processInfo.environment["DOCKIT_COVER_HOLD"].flatMap(Double.init) {
             // Diagnostic: keep the wallpaper cover up for a while so a recording
-            // can show whether it hides the Dock restart's black frame.
-            DockRestartCover.shared.show()
-            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { DockRestartCover.shared.hide() }
+            // can show whether it hides the Dock restart's black frame. The
+            // decode runs off the main thread, so give it a second first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { DockRestartCover.shared.show() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1 + seconds) { DockRestartCover.shared.hide() }
         }
     }
 

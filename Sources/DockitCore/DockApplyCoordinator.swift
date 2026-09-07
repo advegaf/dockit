@@ -70,15 +70,9 @@ public enum DockApplyError: LocalizedError {
 }
 
 public actor DockApplyCoordinator {
-    /// How long after a restart the Dock may still rewrite `persistent-apps`
-    /// from its own memory. Measured at about 4.1 seconds on macOS 26.4; a
-    /// write inside that window is overwritten and the apply fails.
-    public static let dockSettleWindow: Duration = .seconds(6)
-
     private let preferences: any DockPreferencesServing
     private let reloader: any DockReloading
     private let operationGate = DockOperationGate()
-    private var pendingSettle: (deadline: ContinuousClock.Instant, written: DockSnapshot)?
 
     public init(
         preferences: any DockPreferencesServing = DockPreferencesClient(),
@@ -124,7 +118,6 @@ public actor DockApplyCoordinator {
         localState: DockProfileLocalState
     ) async throws -> DockApplyPlan {
         try await preferences.assertMutable()
-        await waitForDockToSettle()
         let previous = try await preferences.readPersistentApps()
         let built = try DockSnapshot.build(profile: profile, localState: localState)
         return DockApplyPlan(
@@ -140,12 +133,18 @@ public actor DockApplyCoordinator {
         }
     }
 
-    private func applyPrepared(_ plan: DockApplyPlan) async throws -> DockApplyResult {
+    private func applyPrepared(_ prepared: DockApplyPlan) async throws -> DockApplyResult {
         try await preferences.assertMutable()
-        await waitForDockToSettle()
         let current = try await preferences.readPersistentApps()
-        guard current.isEquivalent(to: plan.previousSnapshot) else {
-            throw DockApplyError.dockChangedBeforeApply
+        var plan = prepared
+        if !current.isEquivalent(to: plan.previousSnapshot) {
+            // A relaunched Dock rewrites its pinned apps in its own encoding a
+            // few seconds after it starts. Same layout, different bytes: that is
+            // the Dock, not the user, so it is still the layout to roll back to.
+            guard current.hasSameLayout(as: plan.previousSnapshot) else {
+                throw DockApplyError.dockChangedBeforeApply
+            }
+            plan.previousSnapshot = current
         }
         if plan.previousSnapshot.hasSameLayout(as: plan.intendedSnapshot) {
             return DockApplyResult(
@@ -156,11 +155,12 @@ public actor DockApplyCoordinator {
             )
         }
 
+        var reloaded = false
         do {
             try await preferences.writePersistentApps(plan.intendedSnapshot)
             try await verifyExact(plan.intendedSnapshot)
             let reload = try await reloader.reload()
-            noteReload(of: plan.intendedSnapshot)
+            reloaded = true
             let appliedSnapshot = try await verifyLayout(plan.intendedSnapshot)
             return DockApplyResult(
                 previousSnapshot: plan.previousSnapshot,
@@ -171,11 +171,17 @@ public actor DockApplyCoordinator {
         } catch {
             let applyCause = error.localizedDescription
             do {
-                await waitForDockToSettle()
+                // A Dock that finished relaunching shows what is on disk. When
+                // that is already the previous layout, a second restart would
+                // only repeat the flash.
+                if reloaded, let current = try? await preferences.readPersistentApps(),
+                   current.hasSameLayout(as: plan.previousSnapshot)
+                {
+                    throw DockApplyError.rolledBack(cause: applyCause)
+                }
                 try await preferences.writePersistentApps(plan.previousSnapshot)
                 try await verifyExact(plan.previousSnapshot)
                 _ = try await reloader.reload()
-                noteReload(of: plan.previousSnapshot)
                 _ = try await verifyLayout(plan.previousSnapshot)
                 throw DockApplyError.rolledBack(cause: applyCause)
             } catch let rollbackError as DockApplyError {
@@ -221,7 +227,6 @@ public actor DockApplyCoordinator {
         recordedProcessIdentifier: Int32?
     ) async throws -> DockReloadResult? {
         try await preferences.assertMutable()
-        await waitForDockToSettle()
         let current = try await preferences.readPersistentApps()
         if current.isEquivalent(to: snapshot) {
             guard forceReload else { return nil }
@@ -232,38 +237,14 @@ public actor DockApplyCoordinator {
                 return nil
             }
             let result = try await reloader.reload()
-            noteReload(of: snapshot)
             _ = try await verifyLayout(snapshot)
             return result
         }
         try await preferences.writePersistentApps(snapshot)
         try await verifyExact(snapshot)
         let result = try await reloader.reload()
-        noteReload(of: snapshot)
         _ = try await verifyLayout(snapshot)
         return result
-    }
-
-    private func noteReload(of written: DockSnapshot) {
-        pendingSettle = (ContinuousClock.now.advanced(by: Self.dockSettleWindow), written)
-    }
-
-    /// A relaunched Dock rewrites `persistent-apps` from memory a few seconds
-    /// after it starts. A write that lands before that rewrite is lost, so the
-    /// next write waits until the Dock's copy has replaced the bytes we wrote
-    /// (same layout, its own encoding) or the settle window has passed.
-    private func waitForDockToSettle() async {
-        guard let pendingSettle else { return }
-        defer { self.pendingSettle = nil }
-        let clock = ContinuousClock()
-        while clock.now < pendingSettle.deadline {
-            if let current = try? await preferences.readPersistentApps(),
-               !current.isEquivalent(to: pendingSettle.written)
-            {
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(50))
-        }
     }
 
     private func performSerialized<Result: Sendable>(

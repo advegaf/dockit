@@ -22,6 +22,7 @@ shot() {              # shot <name> <ground> [env...]
 shot hero     dark  HOLD=editor   DOCKIT_DEMO_APPEARANCE=dark
 shot editor   light HOLD=editor   DOCKIT_DEMO_APPEARANCE=light
 shot settings light HOLD=settings DOCKIT_DEMO_APPEARANCE=light
+shot guide    dark  HOLD=guide    DOCKIT_DEMO_APPEARANCE=dark
 # No menu shot: screencapture cannot image a pop-up menu window (it answers
 # "could not create image from window" for the menu's window number every time).
 

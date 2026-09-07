@@ -1034,6 +1034,8 @@ enum DockProbe {
                 )
             } else if values.contains("--benchmark-reload") {
                 try await runBenchmark(try DockReloadBenchmarkArguments.parse())
+            } else if values.contains("--experiment") {
+                try await runExperiment(try ExperimentArguments.parse(values))
             } else {
                 let args = try ProbeArguments.parse()
                 try await run(args)
@@ -2064,5 +2066,288 @@ enum DockProbe {
 
     static func writeLine(_ value: String) {
         FileHandle.standardOutput.write(Data("\(value)\n".utf8))
+    }
+}
+
+// MARK: - Settle-wait experiments
+
+/// One question each, on a real Dock, never in DockitCore. All of them start
+/// from a Dock that is two seconds old (restarted through the product path onto
+/// a fixture layout) and try to put the original layout back around a kill.
+enum ProbeExperiment: String, CaseIterable {
+    /// Write, then `kill(pid, SIGKILL)`. A SIGKILLed Dock cannot write, so a
+    /// clobber here comes from cfprefsd or the new Dock.
+    case sigkillWriteKill = "sigkill-write-kill"
+    /// Write, then `kill(pid, SIGTERM)`, what `killall Dock` sends.
+    case sigtermWriteKill = "sigterm-write-kill"
+    /// Write, then `NSRunningApplication.forceTerminate()`, the product path.
+    case forceTerminateWriteKill = "forceterminate-write-kill"
+    /// Write and never kill. Says whether the young Dock's own rewrite (about
+    /// four seconds after launch) clobbers a write that landed before it.
+    case writeThenWait = "write-then-wait"
+    /// SIGKILL, wait for the exit through kqueue, write at once, then verify
+    /// when the new Dock appears and again after its own rewrite.
+    case killThenWrite = "kill-then-write"
+}
+
+struct ExperimentArguments {
+    var experiment: ProbeExperiment
+    var backup: URL
+    var iterations: Int
+
+    static func parse(_ values: [String]) throws -> ExperimentArguments {
+        func value(after flag: String) throws -> String {
+            guard let index = values.firstIndex(of: flag), values.indices.contains(index + 1) else {
+                throw ProbeFailure.invalidArguments("Missing \(flag)")
+            }
+            return values[index + 1]
+        }
+        guard let experiment = ProbeExperiment(rawValue: try value(after: "--experiment")) else {
+            throw ProbeFailure.invalidArguments("Unknown experiment; pick one of \(ProbeExperiment.allCases.map(\.rawValue).joined(separator: ", "))")
+        }
+        let backupPath = try value(after: "--backup")
+        guard backupPath.hasPrefix("/") else {
+            throw ProbeFailure.invalidArguments("The backup path must be absolute")
+        }
+        let iterations = values.contains("--iterations") ? Int(try value(after: "--iterations")) ?? 0 : 1
+        guard iterations >= 1 else { throw ProbeFailure.invalidArguments("--iterations must be at least 1") }
+        return ExperimentArguments(
+            experiment: experiment,
+            backup: URL(fileURLWithPath: backupPath).standardizedFileURL,
+            iterations: iterations
+        )
+    }
+}
+
+extension DockProbe {
+    static func runExperiment(_ args: ExperimentArguments) async throws {
+        guard !FileManager.default.fileExists(atPath: args.backup.path) else {
+            throw ProbeFailure.backupExists(args.backup.path)
+        }
+        let client = DockPreferencesClient()
+        try await client.assertMutable()
+        let originalDomain = dockDomain()
+        guard let originalTiles = originalDomain["persistent-apps"] as? [[String: Any]], originalTiles.count >= 2 else {
+            throw ProbeFailure.invariant("The current Dock needs at least two pinned apps for the experiment")
+        }
+        let original = try DockSnapshot(rawTiles: originalTiles)
+        // Built the way the product builds a profile, so the tiles are not in
+        // the Dock's normalized form. The Dock only rewrites (and a dying Dock
+        // only flushes) when it has something to normalize.
+        let fixture = try DockSnapshot.build(
+            profile: DockProfile(name: "dockit probe", color: .blue, items: [
+                appItem(path: "/System/Applications/Notes.app"),
+                DockItem(kind: .spacer(.regular)),
+                appItem(path: "/System/Applications/TextEdit.app"),
+            ]),
+            localState: DockProfileLocalState()
+        ).snapshot
+        try require(!fixture.hasSameLayout(as: original), "The current Dock already matches the fixture")
+        try writeDomainBackup(originalDomain, to: args.backup)
+        writeLine("DOCKIT_EXPERIMENT \(args.experiment.rawValue) iterations=\(args.iterations)")
+
+        func name(_ snapshot: DockSnapshot) -> String {
+            if snapshot.hasSameLayout(as: original) { return "original" }
+            if snapshot.hasSameLayout(as: fixture) { return "fixture" }
+            return "other"
+        }
+
+        var failures = 0
+        for iteration in 1...args.iterations {
+            // Fresh Dock on the fixture, through the product path.
+            try await client.writePersistentApps(fixture)
+            let fresh = try await SystemDockReloader().reload()
+            let freshStart = ContinuousClock.now
+            writeLine("DOCKIT_EXPERIMENT_ITERATION \(iteration) dock=\(fresh.currentProcessIdentifier)")
+            try await Task.sleep(until: freshStart.advanced(by: .seconds(2)), clock: .continuous)
+
+            let outcome: Bool
+            switch args.experiment {
+            case .sigkillWriteKill, .sigtermWriteKill, .forceTerminateWriteKill:
+                outcome = try await writeKillTrace(
+                    client: client, dock: fresh.currentProcessIdentifier, target: original,
+                    signal: args.experiment == .sigtermWriteKill ? SIGTERM : SIGKILL,
+                    useForceTerminate: args.experiment == .forceTerminateWriteKill, name: name
+                )
+            case .writeThenWait:
+                outcome = try await writeThenWait(client: client, dockStart: freshStart, target: original, name: name)
+            case .killThenWrite:
+                outcome = try await killThenWrite(client: client, dock: fresh.currentProcessIdentifier, target: original, name: name)
+            }
+            writeLine("DOCKIT_EXPERIMENT_RESULT iteration=\(iteration) verified=\(outcome)")
+            if !outcome { failures += 1 }
+        }
+
+        // Leave the Dock on the original layout whatever happened above.
+        let final = try await client.readPersistentApps()
+        if !final.hasSameLayout(as: original) || args.experiment == .writeThenWait {
+            try await client.writePersistentApps(original)
+            _ = try await SystemDockReloader().reload()
+            try await Task.sleep(for: .seconds(5))
+        }
+        try require(try await client.readPersistentApps().hasSameLayout(as: original), "Pinned apps did not restore")
+        writeLine("DOCKIT_EXPERIMENT_DONE failures=\(failures) of=\(args.iterations)")
+    }
+
+    /// Reads the layout every 10 ms across the kill and reports when it flips,
+    /// against the old Dock's exit and the new Dock's start.
+    private static func writeKillTrace(
+        client: DockPreferencesClient,
+        dock: Int32,
+        target: DockSnapshot,
+        signal: Int32,
+        useForceTerminate: Bool,
+        name: @escaping (DockSnapshot) -> String
+    ) async throws -> Bool {
+        let clock = ContinuousClock()
+        try await client.writePersistentApps(target)
+        let written = clock.now
+        let afterWrite = try await client.readPersistentApps()
+        writeLine("DOCKIT_EXPERIMENT_WRITTEN readsBack=\(name(afterWrite))")
+
+        let exit = ProcessExitWatch(processIdentifier: dock)
+        let killed: Bool
+        if useForceTerminate {
+            killed = await MainActor.run {
+                NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
+                    .first(where: { $0.processIdentifier == dock })?.forceTerminate() ?? false
+            }
+        } else {
+            killed = kill(dock, signal) == 0
+        }
+        try require(killed, "The kill was refused")
+        let killAt = clock.now
+        let exitTask = Task.detached { exit.wait(timeout: .seconds(3)) }
+
+        var lastName = name(afterWrite)
+        var flipAt: ContinuousClock.Instant?
+        var newPID: Int32?
+        var newPIDAt: ContinuousClock.Instant?
+        var newPIDStart: Date?
+        let deadline = killAt.advanced(by: .seconds(3))
+        while clock.now < deadline {
+            if newPID == nil, let current = dockProcessIdentifier(), current != dock {
+                newPID = current
+                newPIDAt = clock.now
+                newPIDStart = processStartDate(current)
+            }
+            if let snapshot = try? await client.readPersistentApps() {
+                let now = name(snapshot)
+                if now != lastName {
+                    flipAt = clock.now
+                    writeLine("DOCKIT_EXPERIMENT_FLIP from=\(lastName) to=\(now) afterKillMs=\(ms(clock.now - killAt)) newPIDSeen=\(newPID != nil)")
+                    lastName = now
+                }
+            }
+            if let newPIDAt, clock.now > newPIDAt.advanced(by: .milliseconds(1500)) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let exited = await exitTask.value
+        writeLine("DOCKIT_EXPERIMENT_TIMELINE writeToKillMs=\(ms(killAt - written)) oldExitMs=\(exited.map { String(ms($0)) } ?? "none") newPIDMs=\(newPIDAt.map { String(ms($0 - killAt)) } ?? "none") newPIDStartMs=\(newPIDStart.map { String(Int($0.timeIntervalSinceNow * -1000)) } ?? "none") flipMs=\(flipAt.map { String(ms($0 - killAt)) } ?? "none") pid=\(newPID ?? -1)")
+        // Past the new Dock's own rewrite.
+        if let newPIDAt { try await Task.sleep(until: newPIDAt.advanced(by: .seconds(5)), clock: clock) }
+        let late = try await client.readPersistentApps()
+        writeLine("DOCKIT_EXPERIMENT_LATE layout=\(name(late))")
+        return late.hasSameLayout(as: target)
+    }
+
+    private static func writeThenWait(
+        client: DockPreferencesClient,
+        dockStart: ContinuousClock.Instant,
+        target: DockSnapshot,
+        name: @escaping (DockSnapshot) -> String
+    ) async throws -> Bool {
+        let clock = ContinuousClock()
+        try await client.writePersistentApps(target)
+        let written = try await client.readPersistentApps()
+        var lastBytes = written
+        var lastName = name(written)
+        writeLine("DOCKIT_EXPERIMENT_WRITTEN dockAgeMs=\(ms(clock.now - dockStart)) readsBack=\(lastName)")
+        while clock.now < dockStart.advanced(by: .seconds(8)) {
+            if let snapshot = try? await client.readPersistentApps() {
+                if !snapshot.isEquivalent(to: lastBytes) {
+                    writeLine("DOCKIT_EXPERIMENT_REWRITE dockAgeMs=\(ms(clock.now - dockStart)) layout=\(name(snapshot))")
+                    lastBytes = snapshot
+                }
+                let now = name(snapshot)
+                if now != lastName {
+                    writeLine("DOCKIT_EXPERIMENT_FLIP from=\(lastName) to=\(now) dockAgeMs=\(ms(clock.now - dockStart))")
+                    lastName = now
+                }
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return lastName == "original"
+    }
+
+    private static func killThenWrite(
+        client: DockPreferencesClient,
+        dock: Int32,
+        target: DockSnapshot,
+        name: @escaping (DockSnapshot) -> String
+    ) async throws -> Bool {
+        let clock = ContinuousClock()
+        let exit = ProcessExitWatch(processIdentifier: dock)
+        try require(kill(dock, SIGKILL) == 0, "SIGKILL was refused")
+        let killAt = clock.now
+        guard let exitAfter = await Task.detached(operation: { exit.wait(timeout: .seconds(3)) }).value else {
+            throw ProbeFailure.invariant("The Dock did not exit within 3 s of SIGKILL")
+        }
+        let writeStart = clock.now
+        try await client.writePersistentApps(target)
+        let writeEnd = clock.now
+        var newPID: Int32?
+        var newPIDAt: ContinuousClock.Instant?
+        while clock.now < killAt.advanced(by: .seconds(5)) {
+            if let current = dockProcessIdentifier(), current != dock {
+                newPID = current
+                newPIDAt = clock.now
+                break
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard let newPID, let newPIDAt else { throw ProbeFailure.invariant("The Dock did not come back") }
+        let startDate = processStartDate(newPID)
+        let startMs = startDate.map { Int((Date().timeIntervalSince($0)) * 1000) }.map { Int(ms(clock.now - killAt)) - $0 }
+        let early = try await client.readPersistentApps()
+        writeLine("DOCKIT_EXPERIMENT_TIMELINE oldExitMs=\(ms(exitAfter)) writeStartMs=\(ms(writeStart - killAt)) writeMs=\(ms(writeEnd - writeStart)) newPIDSeenMs=\(ms(newPIDAt - killAt)) newPIDStartMs=\(startMs.map(String.init) ?? "none") pid=\(newPID) earlyLayout=\(name(early))")
+        try await Task.sleep(until: newPIDAt.advanced(by: .seconds(5)), clock: clock)
+        let late = try await client.readPersistentApps()
+        writeLine("DOCKIT_EXPERIMENT_LATE layout=\(name(late))")
+        return early.hasSameLayout(as: target) && late.hasSameLayout(as: target)
+    }
+
+    private static func ms(_ duration: Duration) -> Int {
+        Int(duration / .milliseconds(1))
+    }
+
+    private static func processStartDate(_ pid: Int32) -> Date? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return Date(timeIntervalSince1970: Double(info.pbi_start_tvsec) + Double(info.pbi_start_tvusec) / 1_000_000)
+    }
+}
+
+/// kqueue NOTE_EXIT armed before the kill, so the exit is seen without a poll.
+final class ProcessExitWatch: @unchecked Sendable {
+    private let queue = kqueue()
+    private let armedAt = ContinuousClock.now
+
+    init(processIdentifier: Int32) {
+        var event = kevent(
+            ident: UInt(processIdentifier), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
+            fflags: UInt32(NOTE_EXIT), data: 0, udata: nil
+        )
+        kevent(queue, &event, 1, nil, 0, nil)
+    }
+
+    /// Blocks until the process exits. Returns the time since arming, or nil on timeout.
+    func wait(timeout: Duration) -> Duration? {
+        var out = kevent()
+        var limit = timespec(tv_sec: Int(timeout / .seconds(1)), tv_nsec: 0)
+        let count = kevent(queue, nil, 0, &out, 1, &limit)
+        close(queue)
+        return count > 0 ? ContinuousClock.now - armedAt : nil
     }
 }

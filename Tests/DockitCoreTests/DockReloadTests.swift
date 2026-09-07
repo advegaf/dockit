@@ -97,6 +97,12 @@ private actor ReloadTestPreferences: DockPreferencesServing {
     #expect(SystemDockProcessController().pollInterval == .milliseconds(20))
 }
 
+@Test func forcedTerminationRefusesAProcessThatIsNotTheDock() async {
+    // The forced path sends SIGKILL by pid, so it must never fire at a pid
+    // that is not the running Dock. Our own pid is the safest wrong answer.
+    #expect(await SystemDockProcessController().terminateDockForcibly(processIdentifier: getpid()) == false)
+}
+
 @Test func forcedTerminationUsesOnlyTheForcedPath() async throws {
     let controller = ScriptedDockProcessController(
         initialProcessIdentifier: 10,

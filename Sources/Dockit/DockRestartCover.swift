@@ -1,6 +1,7 @@
 import AppKit
 import DockitCore
 import ScreenCaptureKit
+import os
 
 /// Keeps the wallpaper on screen while the Dock restarts.
 ///
@@ -13,13 +14,14 @@ import ScreenCaptureKit
 /// down once the new Dock has its own wallpaper window on screen. The Dock
 /// strip itself still disappears and returns; nothing here imitates that.
 ///
-/// The image comes from the wallpaper file macOS reports for each screen. When
-/// that file cannot be read (deleted after it was chosen, an aerial, a folder
-/// the app may not read) and the user has not granted Screen Recording, the
-/// screen gets no cover and keeps its short black flash. Images are decoded once at launch so the cover's first frame costs
-/// nothing at switch time. `DOCKIT_COVER_IMAGE=<path>` overrides the image for
-/// every screen; it exists for recordings on machines whose wallpaper file is
-/// gone.
+/// The image comes from the wallpaper file macOS reports for each screen, or
+/// from the copy macOS keeps of every file wallpaper when the original is gone.
+/// When neither reads (an aerial, a dynamic set) and the user has not granted
+/// Screen Recording, the screen gets no cover and keeps its short black flash.
+/// Images are decoded off the main thread at launch, and again after a switch
+/// when the wallpaper store changed, so the cover's first frame costs nothing
+/// at switch time. `DOCKIT_COVER_IMAGE=<path>` overrides the image for every
+/// screen; it exists for recordings.
 @MainActor
 final class DockRestartCover {
     static let shared = DockRestartCover()
@@ -30,32 +32,90 @@ final class DockRestartCover {
         var gravity: CALayerContentsGravity
     }
 
+    private struct ScreenSource: Sendable {
+        var number: NSNumber
+        var candidates: [URL]
+        var fillColor: NSColor
+        var gravity: CALayerContentsGravity
+    }
+
     private var decoded: [NSNumber: Decoded] = [:]
     private var windows: [NSWindow] = []
+    private var decodedFor: (screens: [NSNumber], store: Date?)?
+    private var generation = 0
+    private static let log = Logger(subsystem: "com.advegaf.dockit", category: "cover")
 
-    /// Reads and decodes the wallpaper for every screen. Call once at launch
-    /// and again whenever the screen configuration changes.
+    /// Reads and decodes the wallpaper for every screen, unless the screens
+    /// and the wallpaper store are unchanged since the last decode. Call at
+    /// launch, on screen changes, and after each Dock reload.
     func preload() {
-        decoded.removeAll()
+        let screens = NSScreen.screens
+        let numbers = screens.compactMap { $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber }
+        let storeDate = WallpaperStore.indexModificationDate()
+        if let decodedFor, decodedFor.screens == numbers, decodedFor.store == storeDate { return }
+        decodedFor = (numbers, storeDate)
+        generation += 1
+        let thisGeneration = generation
+
         let override = ProcessInfo.processInfo.environment["DOCKIT_COVER_IMAGE"].map { URL(fileURLWithPath: $0) }
-        for screen in NSScreen.screens {
+        let storeData = try? Data(contentsOf: WallpaperStore.extensionPreferencesURL)
+        var sources: [ScreenSource] = []
+        var uncovered: [NSScreen] = []
+        for screen in screens {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
             let options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
-            if let url = override ?? NSWorkspace.shared.desktopImageURL(for: screen),
-               let image = NSImage(contentsOf: url),
-               let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-            {
-                decoded[number] = Decoded(
-                    image: cgImage,
-                    fillColor: (options[.fillColor] as? NSColor) ?? .black,
-                    gravity: Self.gravity(for: options)
-                )
-            } else {
-                let key = number
-                Task { @MainActor [weak self] in
-                    guard let captured = await Self.captureWallpaper(of: screen) else { return }
-                    self?.decoded[key] = Decoded(image: captured, fillColor: .black, gravity: .resize)
+            var candidates: [URL] = []
+            if let override { candidates.append(override) }
+            if let reported = NSWorkspace.shared.desktopImageURL(for: screen) {
+                candidates.append(reported)
+                if let storeData, let entry = WallpaperStore.entry(for: reported, in: storeData) {
+                    if let copy = entry.copyURL { candidates.append(copy) }
+                    if let bookmark = entry.bookmark {
+                        var stale = false
+                        if let original = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting], bookmarkDataIsStale: &stale) {
+                            candidates.append(original)
+                        }
+                    }
                 }
+            }
+            candidates = candidates.filter { FileManager.default.isReadableFile(atPath: $0.path) }
+            if candidates.isEmpty { uncovered.append(screen) }
+            sources.append(ScreenSource(
+                number: number,
+                candidates: candidates,
+                fillColor: (options[.fillColor] as? NSColor) ?? .black,
+                gravity: Self.gravity(for: options)
+            ))
+        }
+
+        Task.detached(priority: .utility) { [sources] in
+            var fresh: [NSNumber: Decoded] = [:]
+            for source in sources {
+                for url in source.candidates {
+                    if let image = NSImage(contentsOf: url),
+                       let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                    {
+                        fresh[source.number] = Decoded(image: cgImage, fillColor: source.fillColor, gravity: source.gravity)
+                        break
+                    }
+                }
+            }
+            let result = fresh
+            await MainActor.run { [weak self] in
+                guard let self, self.generation == thisGeneration else { return }
+                self.decoded = result
+                for number in sources.map(\.number) where result[number] == nil {
+                    Self.log.debug("no readable wallpaper for screen \(number); cover falls back to capture or nothing")
+                }
+            }
+        }
+
+        for screen in uncovered {
+            guard let key = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
+            Task { @MainActor [weak self] in
+                guard let captured = await Self.captureWallpaper(of: screen) else { return }
+                guard let self, self.generation == thisGeneration, self.decoded[key] == nil else { return }
+                self.decoded[key] = Decoded(image: captured, fillColor: .black, gravity: .resize)
             }
         }
     }
@@ -83,6 +143,10 @@ final class DockRestartCover {
         return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
     }
 
+    /// Diagnostic override for the cover's window level (`DOCKIT_COVER_LEVEL`).
+    private static let level: Int = ProcessInfo.processInfo.environment["DOCKIT_COVER_LEVEL"].flatMap(Int.init)
+        ?? Int(CGWindowLevelForKey(.desktopWindow))
+
     var coversAnyScreen: Bool { !decoded.isEmpty }
 
     func show() {
@@ -96,7 +160,7 @@ final class DockRestartCover {
                 backing: .buffered,
                 defer: false
             )
-            window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
+            window.level = NSWindow.Level(rawValue: Self.level)
             window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
             window.ignoresMouseEvents = true
             window.hasShadow = false
@@ -166,6 +230,7 @@ final class CoveringDockReloader: DockReloading {
             // The window exists a little before its first frame lands.
             try? await Task.sleep(for: .milliseconds(150))
         }
+        await MainActor.run { cover.value.preload() }
         return result
     }
 
@@ -193,4 +258,56 @@ final class CoveringDockReloader: DockReloading {
 private final class MainActorBox<Value>: @unchecked Sendable {
     let value: Value
     init(_ value: Value) { self.value = value }
+}
+
+/// Where macOS keeps its own copy of every wallpaper chosen from a file.
+///
+/// The wallpaper extension records each choice in its container preferences
+/// under `ChoiceRequests.ImageFiles` (a flat key, the dot is literal): an array
+/// of binary plists with the original URL, a bookmark to it, and the copy it
+/// made under `Data/Library/Caches`. The copy is what macOS renders, and it
+/// survives the original being moved or deleted. Reading it never prompts.
+enum WallpaperStore {
+    struct Entry: Equatable {
+        var copyURL: URL?
+        var bookmark: Data?
+    }
+
+    static let extensionPreferencesURL = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Containers/com.apple.wallpaper.extension.image/Data/Library/Preferences/com.apple.wallpaper.extension.image.plist")
+
+    /// The current-wallpaper index. Its modification date changes whenever a
+    /// wallpaper is set, which is a cheap signal to decode again.
+    static let indexURL = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Application Support/com.apple.wallpaper/Store/Index.plist")
+
+    static func indexModificationDate() -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: indexURL.path))?[.modificationDate] as? Date
+    }
+
+    /// The newest record for `reported`, from the extension preferences bytes.
+    /// Garbage or an unexpected layout reads as no record.
+    static func entry(for reported: URL, in preferences: Data) -> Entry? {
+        guard let root = try? PropertyListSerialization.propertyList(from: preferences, format: nil) as? [String: Any],
+              let records = root["ChoiceRequests.ImageFiles"] as? [Data]
+        else { return nil }
+        let wanted = comparablePath(reported)
+        var best: (date: Date, entry: Entry)?
+        for record in records {
+            guard let fields = try? PropertyListSerialization.propertyList(from: record, format: nil) as? [String: Any],
+                  let original = (fields["originalURL"] as? [String: Any])?["relative"] as? String,
+                  let originalURL = URL(string: original),
+                  comparablePath(originalURL) == wanted
+            else { continue }
+            let date = fields["dateAdded"] as? Date ?? .distantPast
+            if let best, best.date > date { continue }
+            let copy = ((fields["copyURL"] as? [String: Any])?["relative"] as? String).flatMap(URL.init(string:))
+            best = (date, Entry(copyURL: copy, bookmark: fields["originalURLBookmarkData"] as? Data))
+        }
+        return best?.entry
+    }
+
+    private static func comparablePath(_ url: URL) -> String {
+        url.standardizedFileURL.path.precomposedStringWithCanonicalMapping.lowercased()
+    }
 }

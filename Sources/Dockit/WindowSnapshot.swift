@@ -1,6 +1,6 @@
 import AppKit
 
-/// Screenshot support. `DOCKIT_WINDOW_HOLD=editor|settings` opens that
+/// Screenshot support. `DOCKIT_WINDOW_HOLD=editor|settings|guide` opens that
 /// surface, prints `windownumber=<n>` on stdout once it is on screen and
 /// settled, and keeps the app alive so `Tools/Screenshots/window-shot.sh` can
 /// capture it through the window server with `screencapture -l`.
@@ -14,6 +14,9 @@ enum WindowSnapshot {
     enum Surface: String {
         case editor
         case settings
+        /// The quick guide sheet over the editor. Only the sheet is reported,
+        /// so the shot is the guide card on its own.
+        case guide
     }
 
     static var requestedSurface: Surface? {
@@ -36,6 +39,31 @@ enum WindowSnapshot {
                 window.orderOut(nil)
             }
             report(windowIdentifier: "preferences")
+        case .guide:
+            delegate.showMainWindow()
+            AppModel.shared.quickGuidePresented = true
+            report(sheetOver: "management")
+        }
+    }
+
+    /// A SwiftUI sheet has no identifier of its own; find it by its parent.
+    private static func report(sheetOver parentIdentifier: String, attempt: Int = 0) {
+        let sheet = NSApplication.shared.windows.first {
+            $0.sheetParent?.identifier?.rawValue == parentIdentifier
+        }
+        if let sheet, sheet.isVisible, sheet.windowNumber > 0 {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                FileHandle.standardOutput.write(Data("windownumber=\(sheet.windowNumber)\n".utf8))
+            }
+            return
+        }
+        guard attempt < 100 else {
+            FileHandle.standardError.write(Data("DOCKIT_WINDOW_HOLD: no sheet appeared over \(parentIdentifier)\n".utf8))
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            report(sheetOver: parentIdentifier, attempt: attempt + 1)
         }
     }
 

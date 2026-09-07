@@ -117,10 +117,17 @@ public actor SystemDockProcessController: DockProcessControlling {
         }
     }
 
+    /// SIGKILL, on purpose. `NSRunningApplication.forceTerminate()` lets the
+    /// Dock run for about 250 ms first, and in that time the Dock flushes its
+    /// in-memory pinned apps over whatever was just written. Measured on
+    /// macOS 26.4: every write-then-forceTerminate lost the write, every
+    /// write-then-SIGKILL kept it, and the Dock was gone in under 10 ms.
     public func terminateDockForcibly(processIdentifier: Int32) async -> Bool {
-        await MainActor.run {
-            Self.runningDock(processIdentifier: processIdentifier)?.forceTerminate() ?? false
+        let isDock = await MainActor.run {
+            Self.runningDock(processIdentifier: processIdentifier) != nil
         }
+        guard isDock else { return false }
+        return kill(processIdentifier, SIGKILL) == 0
     }
 
     public func waitForDockProcess(
