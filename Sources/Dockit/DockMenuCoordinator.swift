@@ -359,6 +359,18 @@ final class DockitAppDelegate: NSObject, NSApplicationDelegate {
         launchedAsLoginItem = launchedAsLoginItem || currentEventIsLoginLaunch
         setPresence(Presence.atLaunch(isLoginItem: launchedAsLoginItem, windows: NSApplication.shared.windows))
         WindowSnapshot.holdIfRequested(delegate: self)
+        DockRestartCover.shared.preload()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { DockRestartCover.shared.preload() }
+        }
+        if let seconds = ProcessInfo.processInfo.environment["DOCKIT_COVER_HOLD"].flatMap(Double.init) {
+            // Diagnostic: keep the wallpaper cover up for a while so a recording
+            // can show whether it hides the Dock restart's black frame.
+            DockRestartCover.shared.show()
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { DockRestartCover.shared.hide() }
+        }
     }
 
     func applicationDidUpdate(_ notification: Notification) {

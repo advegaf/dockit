@@ -19,9 +19,19 @@ verify_background() {
     /usr/bin/grep -Fq 'dpiWidth: 144.000' <<<"$metadata" || fail "background horizontal DPI must be 144"
     /usr/bin/grep -Fq 'dpiHeight: 144.000' <<<"$metadata" || fail "background vertical DPI must be 144"
 }
+detach() {
+    # Finder or Spotlight can hold a fresh mount for a moment; "Resource busy"
+    # on the first try is normal, so retry before giving up.
+    local attempt
+    for attempt in 1 2 3 4 5 6; do
+        /usr/bin/hdiutil detach "$1" -quiet 2>/dev/null && return 0
+        sleep 2
+    done
+    /usr/bin/hdiutil detach "$1" -force -quiet
+}
 cleanup() {
     if [[ -n "$MOUNT_PATH" ]] && /sbin/mount | /usr/bin/grep -Fq " on $MOUNT_PATH ("; then
-        /usr/bin/hdiutil detach "$MOUNT_PATH" -quiet || return
+        detach "$MOUNT_PATH" || return
     fi
     if [[ -n "$WORK_PATH" && -d "$WORK_PATH" ]]; then
         /usr/bin/find "$WORK_PATH" -depth -delete
@@ -78,7 +88,7 @@ fi
 source_hash="$(/usr/bin/codesign -dv --verbose=4 "$APP_PATH" 2>&1 | /usr/bin/grep '^CDHash=')"
 copy_hash="$(/usr/bin/codesign -dv --verbose=4 "$MOUNT_PATH/$app_name" 2>&1 | /usr/bin/grep '^CDHash=')"
 [[ "$source_hash" == "$copy_hash" ]] || fail "app signature changed during packaging"
-/usr/bin/hdiutil detach -quiet "$MOUNT_PATH"
+detach "$MOUNT_PATH"
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 /usr/bin/hdiutil convert -quiet "$WORK_PATH/writable.dmg" -format UDZO -imagekey zlib-level=9 -o "$OUTPUT_PATH"
 /usr/bin/hdiutil verify "$OUTPUT_PATH"
@@ -90,5 +100,5 @@ verify_background "$MOUNT_PATH/.bg.tiff"
 "$PYTHON" "$SCRIPT_DIR/validate-packaged-app.py" "$MOUNT_PATH/$app_name" "$MODE"
 /usr/bin/codesign --verify --deep --strict "$MOUNT_PATH/$app_name"
 [[ "$(/usr/bin/codesign -dv --verbose=4 "$MOUNT_PATH/$app_name" 2>&1 | /usr/bin/grep '^CDHash=')" == "$source_hash" ]] || fail "converted image changed the app signature"
-/usr/bin/hdiutil detach -quiet "$MOUNT_PATH"
+detach "$MOUNT_PATH"
 printf '%s dmg ready: %s\n' "$MODE" "$OUTPUT_PATH"

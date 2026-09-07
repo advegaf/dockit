@@ -16,7 +16,7 @@ The fixed picker and edit menu use native Liquid Glass. The apply button uses pr
 
 All dockit-authored interface text is lowercase. User-entered names, application names, filenames, paths, and system-owned dialogs retain their original casing. Profile names have a 32-grapheme limit. Command ellipses indicate a following dialog, not clipped content.
 
-Animations communicate selection, editing and completion. Use native transitions and honor Reduce Motion. A Dock reload is a real system transition and must not be disguised as an instant custom animation.
+Animations communicate selection, editing and completion. Use native transitions and honor Reduce Motion. A Dock reload is a real system transition and must not be disguised as an instant custom animation. During the reload dockit keeps the wallpaper on screen behind the restart and draws nothing else.
 
 Missing apps remain in profiles. Applying reports skipped apps. Destructive actions identify their scope. Deleting a profile does not alter the real Dock. The final profile cannot be deleted.
 

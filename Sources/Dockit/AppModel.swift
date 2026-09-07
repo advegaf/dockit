@@ -189,7 +189,7 @@ final class AppModel {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         store: DockLibraryStore? = nil,
         preferences: any DockPreferencesServing = DockPreferencesClient(),
-        reloader: any DockReloading = SystemDockReloader(),
+        reloader: any DockReloading = CoveringDockReloader(SystemDockReloader(), cover: DockRestartCover.shared),
         integratesWithSystem: Bool = true,
         focusBridge: FocusBridgeStore? = nil,
         transferFilePicker: TransferFilePicker? = nil,
