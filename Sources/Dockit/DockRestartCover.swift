@@ -104,6 +104,7 @@ final class DockRestartCover {
             await MainActor.run { [weak self] in
                 guard let self, self.generation == thisGeneration else { return }
                 self.decoded = result
+                self.rebuildWindows()
                 for number in sources.map(\.number) where result[number] == nil {
                     Self.log.debug("no readable wallpaper for screen \(number); cover falls back to capture or nothing")
                 }
@@ -116,6 +117,7 @@ final class DockRestartCover {
                 guard let captured = await Self.captureWallpaper(of: screen) else { return }
                 guard let self, self.generation == thisGeneration, self.decoded[key] == nil else { return }
                 self.decoded[key] = Decoded(image: captured, fillColor: .black, gravity: .resize)
+                self.rebuildWindows()
             }
         }
     }
@@ -147,10 +149,14 @@ final class DockRestartCover {
     private static let level: Int = ProcessInfo.processInfo.environment["DOCKIT_COVER_LEVEL"].flatMap(Int.init)
         ?? Int(CGWindowLevelForKey(.desktopWindow))
 
-    var coversAnyScreen: Bool { !decoded.isEmpty }
+    var coversAnyScreen: Bool { !windows.isEmpty }
 
-    func show() {
+    /// The windows exist before they are needed. Creating one at switch time
+    /// costs tens of milliseconds, and with SIGKILL the Dock is gone in under
+    /// ten, so a window built on demand reached the screen after the flash.
+    private func rebuildWindows() {
         hide()
+        windows.removeAll()
         for screen in NSScreen.screens {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
                   let wallpaper = decoded[number] else { continue }
@@ -173,16 +179,32 @@ final class DockRestartCover {
             view.layer?.contentsGravity = wallpaper.gravity
             view.layer?.backgroundColor = wallpaper.fillColor.cgColor
             window.contentView = view
-            window.orderFrontRegardless()
             windows.append(window)
         }
+    }
+
+    func show() {
+        for window in windows {
+            window.orderFrontRegardless()
+        }
+    }
+
+    /// True once the window server lists every cover window as on screen.
+    /// Ordering a window front returns before it is composited; the kill has
+    /// to wait for the frame that actually shows the cover.
+    var isOnScreen: Bool {
+        guard !windows.isEmpty else { return false }
+        let onScreen = Set(
+            (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? [])
+                .compactMap { $0[kCGWindowNumber as String] as? Int }
+        )
+        return windows.allSatisfy { onScreen.contains($0.windowNumber) }
     }
 
     func hide() {
         for window in windows {
             window.orderOut(nil)
         }
-        windows.removeAll()
     }
 
     private static func gravity(for options: [NSWorkspace.DesktopImageOptionKey: Any]) -> CALayerContentsGravity {
@@ -216,8 +238,14 @@ final class CoveringDockReloader: DockReloading {
             return cover.value.coversAnyScreen
         }
         if covering {
-            // Two frames, so the cover is composited before the Dock dies.
-            try? await Task.sleep(for: .milliseconds(34))
+            // Wait for the window server to show the cover, then let the menu
+            // bar backdrop settle on it before the Dock dies.
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: .milliseconds(300))
+            while clock.now < deadline, await !MainActor.run(body: { cover.value.isOnScreen }) {
+                try? await Task.sleep(for: .milliseconds(4))
+            }
+            try? await Task.sleep(for: .milliseconds(Self.settleMilliseconds))
         }
         defer {
             if covering { Task { @MainActor in cover.value.hide() } }
@@ -233,6 +261,14 @@ final class CoveringDockReloader: DockReloading {
         await MainActor.run { cover.value.preload() }
         return result
     }
+
+    /// How long the cover stays up before the kill once it is on screen. The
+    /// menu bar's translucent backdrop crossfades to whatever sits under it
+    /// over about 150 ms; killed sooner than that, the Dock's wallpaper window
+    /// vanishes mid-crossfade and the menu bar dims for two frames. Measured:
+    /// 20 ms dims it by a third, 200 ms leaves no frame off. Diagnostic
+    /// override: `DOCKIT_COVER_SETTLE_MS`.
+    private static let settleMilliseconds: Int = ProcessInfo.processInfo.environment["DOCKIT_COVER_SETTLE_MS"].flatMap(Int.init) ?? 200
 
     /// The Dock creates its wallpaper window early in launch. Waiting for it
     /// keeps the cover up through the black gap without guessing a duration.
