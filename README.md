@@ -62,14 +62,6 @@ Design/                    app icon source and installer artwork
 docs/                      reviews and the feature ledger
 ```
 
-## Screenshots
-
-`Tools/Screenshots/make-docs-images.sh` regenerates every image in `docs/images/`. Each shot is the real window captured through the window server with its own shadow, then placed on a plain backdrop. The app runs in demo mode for every shot, so the real Dock is never touched.
-
-## Release
-
-`Tools/Release/release.sh all` archives, exports with Developer ID, notarizes, staples, and packages `dist/dockit-<version>.dmg`. `Tools/Release/publish.sh <notes.md>` tags the version and creates the GitHub release with that DMG. Details in `Tools/Release/DMG.md`.
-
 ## License
 
 MIT. See LICENSE.
