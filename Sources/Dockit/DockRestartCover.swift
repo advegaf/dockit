@@ -1,5 +1,6 @@
 import AppKit
 import DockitCore
+import ImageIO
 import ScreenCaptureKit
 import os
 
@@ -10,9 +11,12 @@ import os
 /// draws the wallpaper again. That flash is what people notice most about a
 /// profile switch. The cover is one borderless window per screen at the desktop
 /// window level, showing the same image macOS shows, above the Dock's wallpaper
-/// window and below desktop icons. It goes up just before the kill and comes
-/// down once the new Dock has its own wallpaper window on screen. The Dock
-/// strip itself still disappears and returns; nothing here imitates that.
+/// window and below desktop icons. For a still wallpaper from a file it stays
+/// up for as long as dockit runs, so a restart has no transition at all. For
+/// anything else (a dynamic desktop, a captured aerial frame) it goes up just
+/// before the kill and comes down once the new Dock has its own wallpaper
+/// window on screen. The Dock strip itself still disappears and returns;
+/// nothing here imitates that.
 ///
 /// The image comes from the wallpaper file macOS reports for each screen, or
 /// from the copy macOS keeps of every file wallpaper when the original is gone.
@@ -30,6 +34,10 @@ final class DockRestartCover {
         var image: CGImage
         var fillColor: NSColor
         var gravity: CALayerContentsGravity
+        /// A single still frame from a file. Only those can stay up for good;
+        /// a dynamic desktop or a captured aerial frame would freeze the
+        /// wallpaper, so those covers come down after each restart.
+        var isStill: Bool
     }
 
     private struct ScreenSource: Sendable {
@@ -41,8 +49,9 @@ final class DockRestartCover {
 
     private var decoded: [NSNumber: Decoded] = [:]
     private var windows: [NSWindow] = []
-    private var decodedFor: (screens: [NSNumber], store: Date?)?
+    private var decodedFor: (screens: [NSNumber], store: Date?, reported: [String])?
     private var generation = 0
+    private var watcher: Timer?
     private static let log = Logger(subsystem: "com.advegaf.dockit", category: "cover")
 
     /// Reads and decodes the wallpaper for every screen, unless the screens
@@ -52,10 +61,18 @@ final class DockRestartCover {
         let screens = NSScreen.screens
         let numbers = screens.compactMap { $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber }
         let storeDate = WallpaperStore.indexModificationDate()
-        if let decodedFor, decodedFor.screens == numbers, decodedFor.store == storeDate { return }
-        decodedFor = (numbers, storeDate)
+        let reported = screens.map { NSWorkspace.shared.desktopImageURL(for: $0)?.path ?? "" }
+        if let decodedFor, decodedFor.screens == numbers, decodedFor.store == storeDate, decodedFor.reported == reported { return }
+        decodedFor = (numbers, storeDate, reported)
         generation += 1
         let thisGeneration = generation
+        if watcher == nil {
+            // A wallpaper change touches the store index or the reported
+            // file; either makes the next tick decode again.
+            watcher = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.preload() }
+            }
+        }
 
         let override = ProcessInfo.processInfo.environment["DOCKIT_COVER_IMAGE"].map { URL(fileURLWithPath: $0) }
         let storeData = try? Data(contentsOf: WallpaperStore.extensionPreferencesURL)
@@ -95,7 +112,10 @@ final class DockRestartCover {
                     if let image = NSImage(contentsOf: url),
                        let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
                     {
-                        fresh[source.number] = Decoded(image: cgImage, fillColor: source.fillColor, gravity: source.gravity)
+                        let frames = CGImageSourceCreateWithURL(url as CFURL, nil).map(CGImageSourceGetCount) ?? 0
+                        fresh[source.number] = Decoded(
+                            image: cgImage, fillColor: source.fillColor, gravity: source.gravity, isStill: frames == 1
+                        )
                         break
                     }
                 }
@@ -116,7 +136,7 @@ final class DockRestartCover {
             Task { @MainActor [weak self] in
                 guard let captured = await Self.captureWallpaper(of: screen) else { return }
                 guard let self, self.generation == thisGeneration, self.decoded[key] == nil else { return }
-                self.decoded[key] = Decoded(image: captured, fillColor: .black, gravity: .resize)
+                self.decoded[key] = Decoded(image: captured, fillColor: .black, gravity: .resize, isStill: false)
                 self.rebuildWindows()
             }
         }
@@ -151,11 +171,18 @@ final class DockRestartCover {
 
     var coversAnyScreen: Bool { !windows.isEmpty }
 
+    /// Still wallpapers keep the cover up for as long as dockit runs. Then a
+    /// restart has nothing to show or hide, so there is no transition at all;
+    /// the Dock's own wallpaper window just comes and goes underneath.
+    var isPersistent: Bool {
+        !decoded.isEmpty && decoded.values.allSatisfy(\.isStill)
+    }
+
     /// The windows exist before they are needed. Creating one at switch time
     /// costs tens of milliseconds, and with SIGKILL the Dock is gone in under
     /// ten, so a window built on demand reached the screen after the flash.
     private func rebuildWindows() {
-        hide()
+        let previous = windows
         windows.removeAll()
         for screen in NSScreen.screens {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
@@ -181,6 +208,12 @@ final class DockRestartCover {
             window.contentView = view
             windows.append(window)
         }
+        // New windows go up before the old ones come down, so a persistent
+        // cover never shows what is underneath while it is replaced.
+        if isPersistent { show() }
+        for window in previous {
+            window.orderOut(nil)
+        }
     }
 
     func show() {
@@ -202,6 +235,7 @@ final class DockRestartCover {
     }
 
     func hide() {
+        guard !isPersistent else { return }
         for window in windows {
             window.orderOut(nil)
         }
@@ -233,6 +267,12 @@ final class CoveringDockReloader: DockReloading {
     }
 
     func reload() async throws -> DockReloadResult {
+        if await MainActor.run(body: { cover.value.isPersistent }) {
+            // The cover is already up and stays up. Nothing to time.
+            let result = try await inner.reload()
+            await MainActor.run { cover.value.preload() }
+            return result
+        }
         let covering = await MainActor.run { () -> Bool in
             cover.value.show()
             return cover.value.coversAnyScreen
