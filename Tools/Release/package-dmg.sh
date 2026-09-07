@@ -48,7 +48,10 @@ cleanup() {
 "$PYTHON" -c 'import ds_store, mac_alias' || fail "install build-only dependencies from Tools/Release/dmg-requirements.txt"
 /usr/bin/codesign --verify --deep --strict "$APP_PATH"
 if [[ "$MODE" == release ]]; then
-    /usr/bin/codesign -dv "$APP_PATH" 2>&1 | /usr/bin/grep -Fq 'Authority=Developer ID Application:' || fail "release requires Developer ID signing"
+    # Captured rather than piped: grep -q closing the pipe early made codesign
+    # exit on SIGPIPE, and pipefail read that as "not Developer ID signed".
+    signing_info="$(/usr/bin/codesign -dvv "$APP_PATH" 2>&1)"
+    [[ "$signing_info" == *'Authority=Developer ID Application:'* ]] || fail "release requires Developer ID signing"
     xcrun stapler validate "$APP_PATH"
     /usr/sbin/spctl --assess --type execute "$APP_PATH"
 fi

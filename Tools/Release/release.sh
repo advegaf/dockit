@@ -293,7 +293,7 @@ notarize_dmg() {
 }
 
 usage() {
-    printf 'Usage: %s build|verify|notarize|all\n' "$0"
+    printf 'Usage: %s build|verify|notarize|dmg|all\n' "$0"
 }
 
 require_tool xcodegen
@@ -316,6 +316,13 @@ case "${1:-all}" in
         ;;
     notarize)
         notarize_release
+        ;;
+    dmg)
+        # The DMG alone, for an export that is already notarized and stapled.
+        verify_notary_profile
+        verify_export
+        xcrun stapler validate "$APP_PATH" >/dev/null || fail "The export is not stapled. Run notarize first."
+        notarize_dmg "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP_PATH/Contents/Info.plist")"
         ;;
     all)
         verify_notary_profile

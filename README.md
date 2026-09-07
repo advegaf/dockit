@@ -29,16 +29,6 @@ The quick guide opens once, after the first profile is saved, and again from Hel
 
 The editor is one window: a profile picker in the title bar, the profile's name and status, the apply button, and a preview of the Dock it will produce. Selecting a profile only inspects it. Nothing touches the Dock until you apply. The menu bar menu is a plain native menu that lists every profile and marks the active one. A Focus filter (System Settings, Focus, add a filter, dockit) applies a profile when that Focus turns on and leaves the Dock alone when it turns off.
 
-## Why the Dock restarts
-
-macOS has no supported way to reload pinned Dock items without restarting the Dock process. Posting the `com.apple.dock.prefchanged` notification after writing `persistent-apps` does nothing for pinned items; the Dock keeps showing the old layout with the new preferences on disk. Firefox's own "add to Dock" code and dockutil restart the Dock for the same reason, so dockit does too.
-
-How the Dock is killed matters. `NSRunningApplication.forceTerminate()`, a graceful quit, and SIGTERM all let the Dock run for about 250 ms first, and in that time the Dock writes its in-memory pinned apps back over whatever dockit just wrote. That is why a second switch within a few seconds of the first used to fail. dockit sends SIGKILL instead: measured on macOS 26.4 the Dock is gone in under 10 ms, launchd has the new one running about 50 ms later, and the Dock strip is off screen for two frames at 60 fps.
-
-The part people notice is not the Dock strip. The Dock process also owns the desktop wallpaper window, so every display goes black for about 70 ms until the new Dock draws the wallpaper again. dockit covers that: just before the kill it puts a borderless window on each screen at the desktop level showing the same wallpaper image, and, for a still wallpaper from a file, leaves it there for as long as dockit runs, so a restart has no transition at all. A dynamic desktop or an aerial gets a cover only around the restart, since a frozen frame would be wrong for those. Recorded at 60 fps, a switch with the cover leaves no frame of the desktop off. The cover reads the wallpaper file macOS reports for the screen, and when that file is gone it reads the copy macOS made of it when it was chosen (the wallpaper extension keeps one for every file wallpaper, and that copy is what the Dock renders). An aerial or a dynamic set has no file to load; then dockit copies the wallpaper from the screen instead, but only if you have already given it Screen Recording in Privacy and Security. dockit never asks for that permission. Without either, that screen keeps its short flash.
-
-Compared with dockutil, which edits one item at a time from a shell and needs the same restart, dockit keeps whole layouts, verifies the Dock matches after every switch, rolls back when it does not, and recovers a switch that was interrupted mid-way.
-
 ## Build
 
 Requires Xcode 26 and [xcodegen](https://github.com/yonaskolb/XcodeGen).
