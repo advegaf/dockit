@@ -1,6 +1,6 @@
 import AppKit
 
-/// Screenshot support. `DOCKIT_WINDOW_HOLD=editor|settings|guide` opens that
+/// Screenshot support. `DOCKIT_WINDOW_HOLD=editor|settings|guide|menu` opens that
 /// surface, prints `windownumber=<n>` on stdout once it is on screen and
 /// settled, and keeps the app alive so `Tools/Screenshots/window-shot.sh` can
 /// capture it through the window server with `screencapture -l`.
@@ -14,6 +14,7 @@ enum WindowSnapshot {
     enum Surface: String {
         case editor
         case settings
+        case menu
         /// The quick guide sheet over the editor. Only the sheet is reported,
         /// so the shot is the guide card on its own.
         case guide
@@ -27,12 +28,22 @@ enum WindowSnapshot {
     /// presenters are installed.
     static func holdIfRequested(delegate: DockitAppDelegate) {
         guard let surface = requestedSurface else { return }
+        if ProcessInfo.processInfo.environment["DOCKIT_DEMO"] == "1",
+           let name = ProcessInfo.processInfo.environment["DOCKIT_DEMO_PROFILE"],
+           let record = AppModel.shared.library.profiles.first(where: { $0.profile.name == name }) {
+            AppModel.shared.selectedProfileID = record.profile.id
+        }
         switch surface {
         case .editor:
             delegate.showMainWindow()
             report(windowIdentifier: "management")
         case .settings:
             delegate.showSettingsWindow()
+            if ProcessInfo.processInfo.environment["DOCKIT_DEMO"] == "1",
+               ProcessInfo.processInfo.environment["DOCKIT_CAPTURE_FULL_SETTINGS"] == "1",
+               let window = NSApplication.shared.windows.first(where: { $0.identifier?.rawValue == "preferences" }) {
+                window.setContentSize(NSSize(width: 620, height: 780))
+            }
             // The editor opens on launch too; move it out so it does not sit
             // behind the settings shot.
             for window in NSApplication.shared.windows where window.identifier?.rawValue == "management" {
@@ -43,7 +54,37 @@ enum WindowSnapshot {
             delegate.showMainWindow()
             AppModel.shared.quickGuidePresented = true
             report(sheetOver: "management")
+        case .menu:
+            guard ProcessInfo.processInfo.environment["DOCKIT_DEMO"] == "1" else { return }
+            delegate.showMainWindow()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                for window in NSApplication.shared.windows where window.identifier?.rawValue == "management" {
+                    window.orderOut(nil)
+                }
+                guard let screen = NSScreen.main else { return }
+                let point = NSPoint(x: screen.visibleFrame.midX, y: screen.visibleFrame.midY + 150)
+                reportMenu()
+                DockMenuCoordinator.shared.makeMenu().popUp(positioning: nil, at: point, in: nil)
+            }
         }
+    }
+
+    private static func reportMenu() {
+        let started = Date()
+        let timer = Timer(timeInterval: 0.1, repeats: true) { timer in
+            let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+            if let window = windows.first(where: {
+                ($0[kCGWindowOwnerPID as String] as? Int32) == ProcessInfo.processInfo.processIdentifier
+                    && ($0[kCGWindowLayer as String] as? Int) == 101
+            }), let number = window[kCGWindowNumber as String] as? Int {
+                FileHandle.standardOutput.write(Data("windownumber=\(number)\n".utf8))
+                timer.invalidate()
+            } else if Date().timeIntervalSince(started) > 10 {
+                FileHandle.standardError.write(Data("DOCKIT_WINDOW_HOLD: no menu appeared\n".utf8))
+                timer.invalidate()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     /// A SwiftUI sheet has no identifier of its own; find it by its parent.

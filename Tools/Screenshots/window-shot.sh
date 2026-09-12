@@ -14,10 +14,10 @@
 #                 test; README shots want it on, because it is macOS drawing its
 #                 own window and no redrawn frame can match it.
 #
-# HOLD selects the surface: editor or settings. Everything else on the
+# HOLD selects the surface: editor, settings, guide, or menu. Everything else on the
 # command line is passed to the app as environment.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 SHADOW=0
 while [ $# -gt 0 ]; do

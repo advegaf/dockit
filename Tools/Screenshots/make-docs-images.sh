@@ -28,6 +28,18 @@ shot guide    dark  HOLD=guide    DOCKIT_DEMO_APPEARANCE=dark
 # docs/images/menu.png is a hand-taken screenshot of the open menu, cropped to
 # the card with rounded corners and a shadow, then framed with FrameShot.swift.
 
-# The README hero icon, straight from the app icon's largest slot.
-cp Sources/Dockit/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png docs/images/logo.png
+# The README logo, from the app icon's largest slot, at the size the page draws
+# it. The 1024 original is 816KB of detail nobody can see at 120 points, on the
+# first image the page loads.
+sips -Z 512 -s format png Sources/Dockit/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png \
+  --out docs/images/logo.png >/dev/null
 echo "logo: docs/images/logo.png"
+
+# The download button. Drawn, not captured: there is no such button in the app.
+swift Tools/Screenshots/DownloadBadge.swift docs/images/download.png
+
+# What this script does NOT regenerate, so nobody goes looking for the command:
+# editing.png, editor-dark.png, profile-selection.png and menu.png came out of
+# the article pass in Tools/Screenshots/ArticleImages.swift, which composites
+# captures taken separately rather than taking them. menu.png is hand-taken
+# because screencapture cannot image a pop-up menu window at all.
